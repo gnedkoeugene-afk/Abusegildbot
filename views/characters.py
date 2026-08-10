@@ -1,11 +1,53 @@
+# views/characters.py — ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФАЙЛ
+
+from datetime import datetime
 import discord
 import asyncio
 from discord.ui import View, Button, Select, Modal, TextInput
 from discord import ButtonStyle, Color, Embed, TextStyle
-from datetime import datetime
 import utils
 from constants import RAID_ROLE_NAMES, CLASS_SPECS
 from helpers.functions import get_class_emoji
+
+
+# ===================== ФУНКЦИЯ AUTO_FIX_ROLES =====================
+def auto_fix_roles(db, char: dict) -> dict:
+    """Автоматически исправляет роли персонажа на основе его специализаций"""
+    if not char:
+        return char
+    
+    specs_str = char.get('specialization', '')
+    if not specs_str or specs_str == 'Не указана':
+        return char
+    
+    specs = specs_str.split(', ')
+    specs = [s.strip() for s in specs if s.strip()]
+    if not specs:
+        return char
+    
+    # Если одна специализация
+    if len(specs) == 1:
+        expected_role = db.get_setting(f"spec_role_{char['class_spec']}_{specs[0]}", 'mdd')
+        if char.get('raid_role', 'mdd') != expected_role:
+            db.cursor.execute('UPDATE characters SET raid_role = ? WHERE id = ?', (expected_role, char['id']))
+            db.conn.commit()
+            char['raid_role'] = expected_role
+        return char
+    
+    # Если несколько специализаций
+    all_roles = []
+    for spec in specs:
+        role = db.get_setting(f"spec_role_{char['class_spec']}_{spec}", 'mdd')
+        if role not in all_roles:
+            all_roles.append(role)
+    
+    correct_roles = ','.join(all_roles) if all_roles else 'mdd'
+    if char.get('raid_role', 'mdd') != correct_roles:
+        db.cursor.execute('UPDATE characters SET raid_role = ? WHERE id = ?', (correct_roles, char['id']))
+        db.conn.commit()
+        char['raid_role'] = correct_roles
+    
+    return char
 
 
 # ===================== ЛОГИРОВАНИЕ =====================
@@ -134,8 +176,70 @@ class CharactersMainView(View):
 
     @discord.ui.button(label="Специализация", style=ButtonStyle.secondary, emoji="🎯", row=1, custom_id="chars_add_spec")
     async def add_specialization(self, interaction: discord.Interaction, button: Button):
-        # ... (ваш существующий код)
-        pass
+        db = interaction.client.get_db(interaction.guild_id)
+        characters = db.get_user_characters(interaction.user.id)
+        if not characters:
+            await interaction.response.send_message("❌ У вас нет персонажей!", ephemeral=True, delete_after=20)
+            return
+        options = []
+        for char in characters:
+            char = auto_fix_roles(db, char)
+            specs = char.get('specialization', 'Не указана')
+            main_tag = "⭐ " if char['is_main'] else "🔄 "
+            options.append(discord.SelectOption(
+                label=f"{main_tag}{char['character_name']}", 
+                value=str(char['id']), 
+                description=f"{char['class_spec']} | Спеки: {specs}", 
+                emoji="⭐" if char['is_main'] else "🔄"
+            ))
+        select = Select(placeholder="🎯 Выберите персонажа", options=options, custom_id="select_char_for_spec")
+        async def select_callback(interaction: discord.Interaction):
+            char_id = int(interaction.data['values'][0])
+            character = db.get_character_by_id(char_id)
+            if not character:
+                await interaction.response.send_message("❌ Не найден!", ephemeral=True, delete_after=20)
+                return
+            character = auto_fix_roles(db, character)
+            current_specs = character.get('specialization', '').split(', ')
+            current_specs = [s.strip() for s in current_specs if s.strip()]
+            class_name = character['class_spec']
+            all_specs = CLASS_SPECS.get(class_name, [])
+            available = [s for s in all_specs if s not in current_specs]
+            if not available:
+                await interaction.response.send_message(f"✅ Уже все специализации!", ephemeral=True, delete_after=20)
+                return
+            spec_options = []
+            for s in available:
+                role_key = db.get_setting(f"spec_role_{class_name}_{s}", 'mdd')
+                role_name = RAID_ROLE_NAMES.get(role_key, role_key)
+                spec_options.append(discord.SelectOption(label=s, value=s, description=f"Роль: {role_name}", emoji="🎯"))
+            spec_select = Select(placeholder="Выберите специализацию", options=spec_options, custom_id="select_new_spec")
+            async def spec_callback(interaction: discord.Interaction):
+                new_spec = interaction.data['values'][0]
+                current_specs.append(new_spec)
+                new_specs_str = ', '.join(current_specs)
+                all_roles = []
+                for spec in current_specs:
+                    role = db.get_setting(f"spec_role_{class_name}_{spec}", 'mdd')
+                    if role not in all_roles: all_roles.append(role)
+                combined_roles = ','.join(all_roles) if all_roles else 'mdd'
+                db.cursor.execute('UPDATE characters SET specialization = ?, raid_role = ? WHERE id = ?', 
+                                  (new_specs_str, combined_roles, char_id))
+                db.conn.commit()
+                role_display = utils.format_raid_roles(combined_roles)
+                await interaction.response.send_message(
+                    f"✅ **{new_spec}** добавлена!\nСпециализации: **{new_specs_str}**\nРоли: **{role_display}**", 
+                    ephemeral=True, delete_after=10
+                )
+            spec_select.callback = spec_callback
+            view = View(timeout=60); view.add_item(spec_select)
+            await interaction.response.send_message(
+                f"🎯 Выберите специализацию для **{character['character_name']}** ({class_name}):", 
+                view=view, ephemeral=True
+            )
+        select.callback = select_callback
+        view = View(timeout=60); view.add_item(select)
+        await interaction.response.send_message("🎯 Выберите персонажа:", view=view, ephemeral=True)
 
     # РЯД 2 — СМЕНА И УДАЛЕНИЕ
     @discord.ui.button(label="Сменить основного", style=ButtonStyle.primary, emoji="🔄", row=2, custom_id="chars_change_main")
@@ -180,24 +284,156 @@ class CharactersMainView(View):
 
     @discord.ui.button(label="Удалить", style=ButtonStyle.danger, emoji="🗑️", row=2, custom_id="chars_delete")
     async def delete_character(self, interaction: discord.Interaction, button: Button):
-        # ... (ваш существующий код)
-        pass
+        db = interaction.client.get_db(interaction.guild_id)
+        characters = db.get_user_characters(interaction.user.id)
+        twins = [c for c in characters if not c['is_main']]
+        if not twins:
+            await interaction.response.send_message("❌ У вас нет твинков для удаления!", ephemeral=True, delete_after=20)
+            return
+        twins_without = []; twins_with = []
+        for twin in twins:
+            total = db.get_total_violations_by_character(twin['id'])
+            if total > 0: twins_with.append(twin)
+            else: twins_without.append(twin)
+        warning = ""
+        if twins_with:
+            names = ", ".join([f"**{t['character_name']}** (⚠️ {db.get_total_violations_by_character(t['id'])} нар.)" for t in twins_with])
+            warning = f"\n\n⚠️ **Нельзя удалить (есть наказания):**\n{names}"
+        if not twins_without:
+            embed = Embed(title="🗑️ Удаление невозможно", description=f"У всех твинков есть наказания!{warning}", color=Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=20)
+            return
+        options = []
+        for twin in twins_without:
+            twin = auto_fix_roles(db, twin)
+            specs_text = twin.get('specialization', 'Не указана')
+            options.append(discord.SelectOption(
+                label=twin['character_name'], 
+                value=str(twin['id']), 
+                description=f"{twin['class_spec']} ({specs_text}) - {twin['item_level']} iLvl", 
+                emoji=get_class_emoji(twin['class_spec'])
+            ))
+        select = Select(placeholder="🗑️ Выберите твинка для удаления", options=options, custom_id="select_character_delete")
+        async def select_callback(interaction: discord.Interaction):
+            character_id = int(interaction.data['values'][0])
+            character = db.get_character_by_id(character_id)
+            if character:
+                total = db.get_total_violations_by_character(character_id)
+                if total > 0:
+                    await interaction.response.send_message(f"❌ Нельзя удалить — есть наказания!", ephemeral=True, delete_after=20)
+                    return
+                view = ConfirmDeleteView(character_id, character['character_name'])
+                embed = Embed(title="🗑️ Подтверждение удаления", description=f"Удалить **{character['character_name']}**?", color=Color.red())
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Персонаж не найден!", ephemeral=True, delete_after=20)
+        select.callback = select_callback
+        view = View(timeout=60); view.add_item(select)
+        cancel_btn = Button(label="Отмена", style=ButtonStyle.secondary, custom_id="cancel_delete")
+        async def cancel_callback(interaction: discord.Interaction): 
+            await interaction.response.edit_message(content="❌ Отменено.", view=None)
+        cancel_btn.callback = cancel_callback; view.add_item(cancel_btn)
+        embed = Embed(title="🗑️ Удаление твинка", description="Выберите твинка:" + warning, color=Color.red())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # РЯД 3 — ЗАПРОСЫ И ПРОСМОТР ВСЕХ
     @discord.ui.button(label="Запрос в статик", style=ButtonStyle.primary, emoji="📋", row=3, custom_id="chars_static_request")
     async def static_request(self, interaction: discord.Interaction, button: Button):
-        # ... (ваш существующий код)
-        pass
+        db = interaction.client.get_db(interaction.guild_id)
+        main_char = db.get_main_character(interaction.user.id)
+        if not main_char:
+            await interaction.response.send_message("❌ У вас нет основного персонажа!", ephemeral=True, delete_after=20)
+            return
+        
+        required_role_id = utils.safe_int(db.get_setting('static_required_role', ''))
+        if not required_role_id:
+            required_role_id = utils.safe_int(db.get_setting('member_role', ''))
+        
+        if not required_role_id:
+            await interaction.response.send_message("❌ Роль для подачи не настроена! Обратитесь к администратору.", ephemeral=True)
+            return
+        
+        required_role = interaction.guild.get_role(required_role_id)
+        if not required_role:
+            await interaction.response.send_message("❌ Роль не найдена!", ephemeral=True)
+            return
+        
+        if required_role not in interaction.user.roles:
+            no_role_text = db.get_setting('static_no_role_text', '')
+            if not no_role_text:
+                no_role_text = f"Для подачи заявки в статик нужна роль **{required_role.name}**."
+            embed = Embed(title="🔒 Недоступно", description=no_role_text, color=Color.orange())
+            embed.set_footer(text="После получения роли возвращайтесь!")
+            await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=10)
+            return
+        
+        message = db.get_static_request_message()
+        embed = Embed(title="📋 Запрос в статик", description=message, color=Color.blue())
+        view = StaticRequestConfirmView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Все персонажи", style=ButtonStyle.secondary, emoji="👁️", row=3, custom_id="chars_view_all")
     async def view_all_chars(self, interaction: discord.Interaction, button: Button):
-        # ... (ваш существующий код)
-        pass
+        db = interaction.client.get_db(interaction.guild_id)
+        if not utils.can_manage_characters(interaction.user, db):
+            await interaction.response.send_message("❌ Нет прав!", ephemeral=True, delete_after=20)
+            return
+        guild = interaction.guild
+        all_chars = {}
+        for member in guild.members:
+            chars = db.get_user_characters(member.id)
+            if chars: all_chars[member] = chars
+        if not all_chars:
+            await interaction.response.send_message("📭 Нет персонажей.", ephemeral=True, delete_after=20)
+            return
+        await PaginatedCharactersView(interaction, all_chars).send()
 
     @discord.ui.button(label="Обучение на РЛ", style=ButtonStyle.primary, emoji="🎯", row=3, custom_id="chars_trainee")
     async def trainee_apply(self, interaction: discord.Interaction, button: Button):
-        # ... (ваш существующий код)
-        pass
+        """Подать заявку на обучение РЛ"""
+        db = interaction.client.get_db(interaction.guild_id)
+        
+        characters = db.get_user_characters(interaction.user.id)
+        if not characters:
+            await interaction.response.send_message(
+                "❌ Сначала добавьте персонажа в **Мои персонажи**!\n"
+                "Используйте кнопку **➕ Добавить**",
+                ephemeral=True,
+                delete_after=20
+            )
+            return
+        
+        try:
+            existing = db.cursor.execute(
+                'SELECT id, status FROM trainee_applications WHERE user_id = ? AND status = "pending"',
+                (interaction.user.id,)
+            ).fetchone()
+        except:
+            existing = None
+        
+        if existing:
+            await interaction.response.send_message(
+                f"❌ Вы уже подали заявку! Статус: ожидание рассмотрения.\nID заявки: #{existing[0]}",
+                ephemeral=True,
+                delete_after=20
+            )
+            return
+        
+        try:
+            trainee = db.get_trainee_by_user(interaction.user.id)
+        except:
+            trainee = None
+        
+        if trainee and trainee.get('status') == 'active':
+            await interaction.response.send_message(
+                "📊 Вы уже проходите обучение!\nИспользуйте `/curator` для просмотра прогресса.",
+                ephemeral=True,
+                delete_after=20
+            )
+            return
+        
+        from modals.trainee_modals import TraineeApplicationModal
+        await interaction.response.send_modal(TraineeApplicationModal())
 
     # РЯД 4 — СЕРВИСЫ
     @discord.ui.button(label="Техподдержка", style=ButtonStyle.secondary, emoji="🛠️", row=4, custom_id="chars_support")
@@ -264,7 +500,6 @@ class MainChangeReviewView(View):
         db.update_character_main_status(self.new_char_id, True)
         db.update_main_change_request_status(self.request_id, "approved", interaction.user.id)
         
-        # ЛОГИРОВАНИЕ
         user = interaction.guild.get_member(self.user_id)
         old_char = db.get_character_by_id(self.old_char_id)
         new_char = db.get_character_by_id(self.new_char_id)
@@ -309,13 +544,6 @@ class MainChangeReviewView(View):
         await interaction.response.send_modal(modal)
 
 
-# Остальные классы (EditMenuView, ManageSpecsView, PaginatedCharactersView, PaginationView,
-# FirstCharacterView, ClassSpecSelectView, AddMoreSpecsView, ConfirmDeleteView,
-# ChangeMainCharacterSelectView, MainChangeReviewView, StaticRequestConfirmView,
-# StaticRequestReviewView, SupportView) — БЕЗ ИЗМЕНЕНИЙ, как в твоём исходном файле.
-# Ниже они приведены полностью для удобства.
-
-
 class EditMenuView(View):
     def __init__(self, characters: list):
         super().__init__(timeout=60)
@@ -328,7 +556,12 @@ class EditMenuView(View):
         for char in self.characters:
             char = auto_fix_roles(db, char)
             specs_text = char.get('specialization', 'Не указана')
-            options.append(discord.SelectOption(label=char['character_name'], value=str(char['id']), description=f"{char['class_spec']} ({specs_text}) - {char['item_level']} iLvl", emoji=get_class_emoji(char['class_spec'])))
+            options.append(discord.SelectOption(
+                label=char['character_name'], 
+                value=str(char['id']), 
+                description=f"{char['class_spec']} ({specs_text}) - {char['item_level']} iLvl", 
+                emoji=get_class_emoji(char['class_spec'])
+            ))
         select = Select(placeholder="🎯 Выберите персонажа", options=options, custom_id="select_char_edit_info")
         async def select_callback(interaction: discord.Interaction):
             char_id = int(interaction.data['values'][0])
@@ -347,7 +580,12 @@ class EditMenuView(View):
         for char in self.characters:
             char = auto_fix_roles(db, char)
             specs = char.get('specialization', 'Не указана')
-            options.append(discord.SelectOption(label=char['character_name'], value=str(char['id']), description=f"{char['class_spec']} | Спеки: {specs}", emoji=get_class_emoji(char['class_spec'])))
+            options.append(discord.SelectOption(
+                label=char['character_name'], 
+                value=str(char['id']), 
+                description=f"{char['class_spec']} | Спеки: {specs}", 
+                emoji=get_class_emoji(char['class_spec'])
+            ))
         select = Select(placeholder="🎯 Выберите персонажа", options=options, custom_id="select_char_edit_specs")
         async def select_callback(interaction: discord.Interaction):
             char_id = int(interaction.data['values'][0])
@@ -356,7 +594,11 @@ class EditMenuView(View):
                 char = auto_fix_roles(db, char)
                 current_specs = char.get('specialization', '').split(', ')
                 current_specs = [s.strip() for s in current_specs if s.strip()]
-                embed = Embed(title=f"🎯 Специализации: {char['character_name']}", description=f"**Класс:** {char['class_spec']}\n**Текущие:** {', '.join(current_specs) if current_specs else 'Нет'}\n**Роли:** {utils.format_raid_roles(char.get('raid_role', 'mdd'))}", color=Color.blue())
+                embed = Embed(
+                    title=f"🎯 Специализации: {char['character_name']}", 
+                    description=f"**Класс:** {char['class_spec']}\n**Текущие:** {', '.join(current_specs) if current_specs else 'Нет'}\n**Роли:** {utils.format_raid_roles(char.get('raid_role', 'mdd'))}", 
+                    color=Color.blue()
+                )
                 view = ManageSpecsView(char)
                 await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         select.callback = select_callback
@@ -376,13 +618,17 @@ class ManageSpecsView(View):
     @discord.ui.button(label="Добавить", style=ButtonStyle.success, emoji="➕", custom_id="add_spec_btn")
     async def add_spec(self, interaction: discord.Interaction, button: Button):
         db = interaction.client.get_db(interaction.guild_id)
-        if not db: await interaction.response.send_message("❌ Ошибка БД!", ephemeral=True); return
+        if not db: 
+            await interaction.response.send_message("❌ Ошибка БД!", ephemeral=True); 
+            return
         current_specs = self.char.get('specialization', '').split(', ')
         current_specs = [s.strip() for s in current_specs if s.strip()]
         class_name = self.char['class_spec']
         all_specs = CLASS_SPECS.get(class_name, [])
         available = [s for s in all_specs if s not in current_specs]
-        if not available: await interaction.response.send_message("✅ Все спеки уже добавлены!", ephemeral=True); return
+        if not available: 
+            await interaction.response.send_message("✅ Все спеки уже добавлены!", ephemeral=True); 
+            return
         spec_options = []
         for s in available:
             role_key = db.get_setting(f"spec_role_{class_name}_{s}", 'mdd')
@@ -398,10 +644,15 @@ class ManageSpecsView(View):
                 role = db.get_setting(f"spec_role_{class_name}_{spec}", 'mdd')
                 if role not in all_roles: all_roles.append(role)
             new_roles = ','.join(all_roles) if all_roles else 'mdd'
-            db.cursor.execute('UPDATE characters SET specialization=?, raid_role=? WHERE id=?', (new_specs_str, new_roles, self.char['id']))
+            db.cursor.execute('UPDATE characters SET specialization=?, raid_role=? WHERE id=?', 
+                              (new_specs_str, new_roles, self.char['id']))
             db.conn.commit()
             self.char['specialization'] = new_specs_str; self.char['raid_role'] = new_roles
-            embed = Embed(title="✅ Специализация добавлена", description=f"**{self.char['character_name']}**\nСпециализации: **{new_specs_str}**\nРоли: **{utils.format_raid_roles(new_roles)}**", color=Color.green())
+            embed = Embed(
+                title="✅ Специализация добавлена", 
+                description=f"**{self.char['character_name']}**\nСпециализации: **{new_specs_str}**\nРоли: **{utils.format_raid_roles(new_roles)}**", 
+                color=Color.green()
+            )
             await interaction.response.edit_message(embed=embed, view=ManageSpecsView(self.char))
         select.callback = callback
         v = View(timeout=30); v.add_item(select)
@@ -410,10 +661,14 @@ class ManageSpecsView(View):
     @discord.ui.button(label="Снять", style=ButtonStyle.danger, emoji="🗑️", custom_id="remove_spec_btn")
     async def remove_spec(self, interaction: discord.Interaction, button: Button):
         db = interaction.client.get_db(interaction.guild_id)
-        if not db: await interaction.response.send_message("❌ Ошибка БД!", ephemeral=True); return
+        if not db: 
+            await interaction.response.send_message("❌ Ошибка БД!", ephemeral=True); 
+            return
         current_specs = self.char.get('specialization', '').split(', ')
         current_specs = [s.strip() for s in current_specs if s.strip()]
-        if len(current_specs) <= 1: await interaction.response.send_message("⚠️ Нельзя оставить без специализации!", ephemeral=True); return
+        if len(current_specs) <= 1: 
+            await interaction.response.send_message("⚠️ Нельзя оставить без специализации!", ephemeral=True); 
+            return
         spec_options = [discord.SelectOption(label=spec, value=spec, emoji="🗑️") for spec in current_specs]
         select = Select(placeholder="Выберите для снятия", options=spec_options, custom_id="select_spec_remove")
         async def callback(interaction: discord.Interaction):
@@ -425,10 +680,15 @@ class ManageSpecsView(View):
                 role = db.get_setting(f"spec_role_{self.char['class_spec']}_{spec}", 'mdd')
                 if role not in all_roles: all_roles.append(role)
             new_roles = ','.join(all_roles) if all_roles else 'mdd'
-            db.cursor.execute('UPDATE characters SET specialization=?, raid_role=? WHERE id=?', (new_specs_str, new_roles, self.char['id']))
+            db.cursor.execute('UPDATE characters SET specialization=?, raid_role=? WHERE id=?', 
+                              (new_specs_str, new_roles, self.char['id']))
             db.conn.commit()
             self.char['specialization'] = new_specs_str; self.char['raid_role'] = new_roles
-            embed = Embed(title="✅ Специализация снята", description=f"**{self.char['character_name']}**\nОставшиеся: **{new_specs_str}**\nРоли: **{utils.format_raid_roles(new_roles)}**", color=Color.orange())
+            embed = Embed(
+                title="✅ Специализация снята", 
+                description=f"**{self.char['character_name']}**\nОставшиеся: **{new_specs_str}**\nРоли: **{utils.format_raid_roles(new_roles)}**", 
+                color=Color.orange()
+            )
             await interaction.response.edit_message(embed=embed, view=ManageSpecsView(self.char))
         select.callback = callback
         v = View(timeout=30); v.add_item(select)
@@ -445,7 +705,11 @@ class PaginatedCharactersView:
         db = self.interaction.client.get_db(self.interaction.guild_id)
         start = self.page * self.items_per_page; end = start + self.items_per_page
         current_members = self.members_list[start:end]
-        embed = Embed(title="👁️ Все персонажи гильдии", description=f"Страница {self.page + 1} из {self.total_pages}", color=Color.blue())
+        embed = Embed(
+            title="👁️ Все персонажи гильдии", 
+            description=f"Страница {self.page + 1} из {self.total_pages}", 
+            color=Color.blue()
+        )
         for member in current_members:
             chars = self.all_chars[member]
             main_char = next((c for c in chars if c['is_main']), None)
@@ -471,7 +735,11 @@ class PaginatedCharactersView:
 def build_page_embed(db, paginator, page):
     start = page * paginator.items_per_page; end = start + paginator.items_per_page
     current_members = paginator.members_list[start:end]
-    embed = Embed(title="👁️ Все персонажи гильдии", description=f"Страница {page + 1} из {paginator.total_pages}", color=Color.blue())
+    embed = Embed(
+        title="👁️ Все персонажи гильдии", 
+        description=f"Страница {page + 1} из {paginator.total_pages}", 
+        color=Color.blue()
+    )
     for member in current_members:
         chars = paginator.all_chars[member]
         main_char = next((c for c in chars if c['is_main']), None)
@@ -551,7 +819,9 @@ class ClassSpecSelectView(View):
             role_key = db.get_setting(f"spec_role_{self.selected_class}_{spec}", 'mdd')
             role_name = RAID_ROLE_NAMES.get(role_key, role_key)
             spec_options.append(discord.SelectOption(label=spec, value=spec, description=f"Роль: {role_name}", emoji="🎯"))
-        if not spec_options: await self.save_character(interaction); return
+        if not spec_options: 
+            await self.save_character(interaction); 
+            return
         self.spec_select = Select(placeholder="🎯 Выберите специализацию", options=spec_options, custom_id="spec_select")
         self.spec_select.callback = self.on_spec_select
         self.clear_items(); self.add_item(self.spec_select)
@@ -566,7 +836,11 @@ class ClassSpecSelectView(View):
         remaining = [s for s in specs if s != specialization]
         if remaining:
             view = AddMoreSpecsView(self, remaining)
-            embed = Embed(title="🎯 Добавить специализацию?", description=f"Выбрана: **{specialization}**\nРоль: **{RAID_ROLE_NAMES.get(self.raid_role, self.raid_role)}**\n\nХотите добавить ещё?", color=Color.blue())
+            embed = Embed(
+                title="🎯 Добавить специализацию?", 
+                description=f"Выбрана: **{specialization}**\nРоль: **{RAID_ROLE_NAMES.get(self.raid_role, self.raid_role)}**\n\nХотите добавить ещё?", 
+                color=Color.blue()
+            )
             await interaction.response.edit_message(embed=embed, view=view)
         else:
             await self.save_character(interaction)
@@ -582,14 +856,28 @@ class ClassSpecSelectView(View):
             self.raid_role = ','.join(all_roles) if all_roles else 'mdd'
         elif len(self.selected_specs) == 1:
             self.raid_role = db.get_setting(f"spec_role_{self.selected_class}_{self.selected_specs[0]}", 'mdd')
-        data = {'character_name': self.character_name, 'class_spec': self.selected_class, 'specialization': specs_str, 'item_level': self.item_level, 'profile_url': self.profile_url, 'raid_role': self.raid_role, 'is_main': 1 if self.is_main else 0}
+        data = {
+            'character_name': self.character_name, 
+            'class_spec': self.selected_class, 
+            'specialization': specs_str, 
+            'item_level': self.item_level, 
+            'profile_url': self.profile_url, 
+            'raid_role': self.raid_role, 
+            'is_main': 1 if self.is_main else 0
+        }
         db.add_character(interaction.user.id, data)
         role_name = utils.format_raid_roles(self.raid_role)
         if self.is_main:
             db.mark_characters_added(interaction.user.id)
-            await interaction.response.edit_message(content=f"✅ Основной персонаж **{self.character_name}** добавлен!\nСпециализации: {specs_str}\nРоли: {role_name}", view=None)
+            await interaction.response.edit_message(
+                content=f"✅ Основной персонаж **{self.character_name}** добавлен!\nСпециализации: {specs_str}\nРоли: {role_name}", 
+                view=None
+            )
         else:
-            await interaction.response.edit_message(content=f"✅ Твинк **{self.character_name}** добавлен!\nСпециализации: {specs_str}\nРоли: {role_name}", view=None)
+            await interaction.response.edit_message(
+                content=f"✅ Твинк **{self.character_name}** добавлен!\nСпециализации: {specs_str}\nРоли: {role_name}", 
+                view=None
+            )
         await asyncio.sleep(3)
         try: await interaction.delete_original_response()
         except: pass
@@ -606,7 +894,8 @@ class AddMoreSpecsView(View):
     
     async def on_select(self, interaction: discord.Interaction):
         value = interaction.data['values'][0]
-        if value == "done": await self.parent_view.save_character(interaction)
+        if value == "done": 
+            await self.parent_view.save_character(interaction)
         else:
             self.parent_view.selected_specs.append(value)
             specs = CLASS_SPECS.get(self.parent_view.selected_class, [])
@@ -614,12 +903,21 @@ class AddMoreSpecsView(View):
             if remaining:
                 options = [discord.SelectOption(label=spec, value=spec) for spec in remaining]
                 options.append(discord.SelectOption(label="✅ Готово", value="done", emoji="✅"))
-                select = Select(placeholder=f"Выбрано: {', '.join(self.parent_view.selected_specs)}. Ещё?", options=options, custom_id="add_more_specs2")
+                select = Select(
+                    placeholder=f"Выбрано: {', '.join(self.parent_view.selected_specs)}. Ещё?", 
+                    options=options, 
+                    custom_id="add_more_specs2"
+                )
                 select.callback = self.on_select
                 self.clear_items(); self.add_item(select)
-                embed = Embed(title="🎯 Специализации", description=f"Выбрано: **{', '.join(self.parent_view.selected_specs)}**\nМожно добавить ещё:", color=Color.blue())
+                embed = Embed(
+                    title="🎯 Специализации", 
+                    description=f"Выбрано: **{', '.join(self.parent_view.selected_specs)}**\nМожно добавить ещё:", 
+                    color=Color.blue()
+                )
                 await interaction.response.edit_message(embed=embed, view=self)
-            else: await self.parent_view.save_character(interaction)
+            else: 
+                await self.parent_view.save_character(interaction)
 
 
 class ConfirmDeleteView(View):
@@ -639,62 +937,6 @@ class ConfirmDeleteView(View):
         await interaction.response.edit_message(content="❌ Отменено.", embed=None, view=None)
 
 
-class ChangeMainCharacterSelectView(View):
-    def __init__(self, twins: list):
-        super().__init__(timeout=60)
-        self.twins = twins
-        select = Select(placeholder="🎯 Выберите нового основного персонажа", custom_id="select_new_main_twin")
-        options = []
-        for twin in twins[:25]:
-            raid_role_text = utils.format_raid_roles(twin.get('raid_role', 'mdd'))
-            specs_text = twin.get('specialization', 'Не указана')
-            options.append(discord.SelectOption(label=twin['character_name'], value=str(twin['id']), description=f"{twin['class_spec']} ({specs_text}) | {twin['item_level']} iLvl", emoji="🔄"))
-        select.options = options
-        async def select_callback(interaction: discord.Interaction):
-            twin_id = int(interaction.data['values'][0])
-            twin = next((t for t in self.twins if t['id'] == twin_id), None)
-            if twin:
-                from modals.character_modals import ChangeMainCharacterModal
-                await interaction.response.send_modal(ChangeMainCharacterModal(twin['id'], twin['character_name']))
-        select.callback = select_callback; self.add_item(select)
-        cancel_btn = Button(label="Отмена", style=ButtonStyle.secondary, custom_id="cancel_main_change")
-        async def cancel_callback(interaction: discord.Interaction): await interaction.response.edit_message(content="❌ Отменено.", embed=None, view=None)
-        cancel_btn.callback = cancel_callback; self.add_item(cancel_btn)
-
-
-class MainChangeReviewView(View):
-    def __init__(self, request_id: int, user_id: int, old_char_id: int, new_char_id: int):
-        super().__init__(timeout=None)
-        self.request_id = request_id; self.user_id = user_id; self.old_char_id = old_char_id; self.new_char_id = new_char_id
-
-    @discord.ui.button(label="Одобрить", style=ButtonStyle.success, emoji="✅", custom_id="approve_main_change_global")
-    async def approve_button(self, interaction: discord.Interaction, button: Button):
-        db = interaction.client.get_db(interaction.guild_id)
-        if not utils.can_approve_main_change(interaction.user, db): await interaction.response.send_message("❌ Нет прав!", ephemeral=True, delete_after=10); return
-        db.update_character_main_status(self.old_char_id, False); db.update_character_main_status(self.new_char_id, True)
-        db.update_main_change_request_status(self.request_id, "approved", interaction.user.id)
-        await interaction.response.send_message("✅ Одобрено!", ephemeral=True, delete_after=5)
-        user = interaction.guild.get_member(self.user_id)
-        if user:
-            try: await user.send(embed=Embed(title="✅ Заявка одобрена!", color=Color.green()))
-            except: pass
-        try: await interaction.channel.delete()
-        except: pass
-
-    @discord.ui.button(label="Отклонить", style=ButtonStyle.danger, emoji="❌", custom_id="reject_main_change_global")
-    async def reject_button(self, interaction: discord.Interaction, button: Button):
-        db = interaction.client.get_db(interaction.guild_id)
-        if not utils.can_approve_main_change(interaction.user, db): await interaction.response.send_message("❌ Нет прав!", ephemeral=True, delete_after=10); return
-        db.update_main_change_request_status(self.request_id, "rejected", interaction.user.id)
-        await interaction.response.send_message("❌ Отклонено!", ephemeral=True, delete_after=5)
-        user = interaction.guild.get_member(self.user_id)
-        if user:
-            try: await user.send(embed=Embed(title="❌ Заявка отклонена!", color=Color.red()))
-            except: pass
-        try: await interaction.channel.delete()
-        except: pass
-
-
 class StaticRequestConfirmView(View):
     def __init__(self): super().__init__(timeout=60)
 
@@ -711,6 +953,7 @@ class StaticRequestReviewView(View):
         self.total_voters = 0
         self.voters_list = []
         self.initialized = False
+        self.finalized = False
     
     async def init_voters(self, interaction):
         if self.initialized:
@@ -780,6 +1023,10 @@ class StaticRequestReviewView(View):
     
     @discord.ui.button(label="За", style=ButtonStyle.success, emoji="✅", custom_id="static_vote_yes")
     async def vote_yes(self, interaction: discord.Interaction, button: Button):
+        if self.finalized:
+            await interaction.response.send_message("❌ Голосование уже завершено!", ephemeral=True)
+            return
+        
         db = interaction.client.get_db(interaction.guild_id)
         if not db:
             await interaction.response.send_message("❌ БД не найдена!", ephemeral=True)
@@ -823,6 +1070,10 @@ class StaticRequestReviewView(View):
     
     @discord.ui.button(label="Против", style=ButtonStyle.danger, emoji="❌", custom_id="static_vote_no")
     async def vote_no(self, interaction: discord.Interaction, button: Button):
+        if self.finalized:
+            await interaction.response.send_message("❌ Голосование уже завершено!", ephemeral=True)
+            return
+        
         db = interaction.client.get_db(interaction.guild_id)
         if not db:
             await interaction.response.send_message("❌ БД не найдена!", ephemeral=True)
@@ -886,7 +1137,11 @@ class StaticRequestReviewView(View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
     
     async def finalize_voting(self, interaction, db, request_data):
-        yes, no, _ = self.get_vote_counts()
+        if self.finalized:
+            return
+        
+        self.finalized = True
+        yes, no, remaining = self.get_vote_counts()
         
         req_data = db.get_pending_static_request(interaction.channel_id)
         if not req_data:
@@ -896,9 +1151,22 @@ class StaticRequestReviewView(View):
         user_id = req_data.get('user_id')
         user = interaction.guild.get_member(user_id)
         
+        voters_yes = self.get_voters_mentions(True)
+        voters_no = self.get_voters_mentions(False)
+        
+        votes_data = {
+            'yes': yes,
+            'no': no,
+            'remaining': remaining,
+            'total_voters': self.total_voters,
+            'voters_yes': voters_yes,
+            'voters_no': voters_no
+        }
+        
         if yes > no:
-            # ПРИНЯТО
+            status_text = "✅ ЗАЯВКА ПРИНЯТА (голосование)"
             db.update_static_request_status(request_id, "accepted", interaction.user.id)
+            
             if user:
                 for i in range(1, 4):
                     remove_role_id = utils.safe_int(db.get_setting(f'static_remove_role_{i}', ''))
@@ -939,8 +1207,9 @@ class StaticRequestReviewView(View):
                     )
                     await user.send(embed=dm)
                 except: pass
+            
         else:
-            # ОТКЛОНЕНО
+            status_text = "❌ ЗАЯВКА ОТКЛОНЕНА (голосование)"
             db.update_static_request_status(request_id, "rejected", interaction.user.id)
             
             embed = self.build_embed(interaction, request_data)
@@ -961,30 +1230,14 @@ class StaticRequestReviewView(View):
                     await user.send(embed=dm)
                 except: pass
         
-        # Логи
-        try:
-            log_ch = utils.safe_int(db.get_setting('log_channel', ''))
-            if log_ch:
-                ch = interaction.guild.get_channel(log_ch)
-                if ch:
-                    log_embed = Embed(
-                        title="📋 Заявка в статик",
-                        description=f"**Статус:** {'✅ ПРИНЯТО' if yes > no else '❌ ОТКЛОНЕНО'} (голосование)",
-                        color=Color.green() if yes > no else Color.red(),
-                        timestamp=datetime.now()
-                    )
-                    log_embed.add_field(name="👤 Пользователь", value=user.mention if user else f"ID:{user_id}", inline=True)
-                    log_embed.add_field(name="📊 Итог", value=f"За: {yes}\nПротив: {no}", inline=True)
-                    await ch.send(embed=log_embed)
-        except: pass
-        
         db.clear_static_votes(interaction.channel_id)
         await interaction.response.edit_message(embed=embed, view=None)
         
         try:
             await asyncio.sleep(10)
             await interaction.channel.delete()
-        except: pass
+        except:
+            pass
 
 
 class SupportView(View):
