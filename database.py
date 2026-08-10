@@ -2396,4 +2396,85 @@ class Database:
             return True
         except Exception as e:
             print(f"❌ Ошибка удаления курсанта {user_id}: {e}")
+            return False
+            
+   # =========================================================
+    # МЕТОДЫ ДЛЯ ЗАЯВОК НА СМЕНУ ОСНОВНОГО ПЕРСОНАЖА
+    # =========================================================
+
+    def update_main_change_request_status(self, request_id: int, status: str, reviewer_id: int):
+        """Обновить статус заявки на смену основного персонажа"""
+        try:
+            self.cursor.execute('''
+                UPDATE main_change_requests 
+                SET status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewer_id = ?
+                WHERE id = ?
+            ''', (status, reviewer_id, request_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка обновления статуса заявки: {e}")
+            return False
+
+    def get_pending_main_change_request(self, user_id: int) -> dict:
+        """Получить активную заявку на смену основного персонажа для пользователя"""
+        try:
+            self.cursor.execute('''
+                SELECT * FROM main_change_requests 
+                WHERE user_id = ? AND status = 'pending'
+                ORDER BY created_at DESC LIMIT 1
+            ''', (user_id,))
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            print(f"❌ Ошибка получения заявки: {e}")
+            return None
+
+    def create_main_change_request(self, user_id: int, old_char_id: int, new_char_id: int, reason: str) -> int:
+        """Создать новую заявку на смену основного персонажа"""
+        try:
+            self.cursor.execute('''
+                INSERT INTO main_change_requests (user_id, old_char_id, new_char_id, reason, status)
+                VALUES (?, ?, ?, ?, 'pending')
+            ''', (user_id, old_char_id, new_char_id, reason))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except Exception as e:
+            print(f"❌ Ошибка создания заявки: {e}")
+            return None
+
+    def update_main_change_request_channel(self, request_id: int, channel_id: int):
+        """Сохранить ID канала для заявки"""
+        try:
+            self.cursor.execute('''
+                UPDATE main_change_requests SET channel_id = ? WHERE id = ?
+            ''', (channel_id, request_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка обновления канала заявки: {e}")
+            return False
+
+    def create_main_change_table(self):
+        """Создать таблицу для заявок на смену основного персонажа"""
+        try:
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS main_change_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    old_char_id INTEGER NOT NULL,
+                    new_char_id INTEGER NOT NULL,
+                    reason TEXT,
+                    status TEXT DEFAULT 'pending',
+                    channel_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_at TIMESTAMP,
+                    reviewer_id INTEGER
+                )
+            ''')
+            self.conn.commit()
+            print("✅ Таблица main_change_requests создана/проверена")
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка создания таблицы: {e}")
             return False    
