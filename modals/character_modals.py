@@ -568,3 +568,67 @@ class StaticRejectModal(Modal):
             await interaction.channel.delete()
         except:
             pass
+
+class MainChangeRejectModal(Modal, title="❌ Отклонение заявки"):
+    
+    def __init__(self, request_id: int, user_id: int, old_char_id: int, new_char_id: int):
+        super().__init__()
+        self.request_id = request_id
+        self.user_id = user_id
+        self.old_char_id = old_char_id
+        self.new_char_id = new_char_id
+    
+    reason = TextInput(
+        label="Причина отклонения",
+        placeholder="Укажите причину отклонения заявки...",
+        style=TextStyle.paragraph,
+        required=True,
+        max_length=500
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        db = interaction.client.get_db(interaction.guild_id)
+        
+        if not db:
+            await interaction.response.send_message("❌ Ошибка подключения к БД!", ephemeral=True)
+            return
+        
+        db.update_main_change_request_status(self.request_id, "rejected", interaction.user.id)
+        
+        # ЛОГИРОВАНИЕ
+        user = interaction.guild.get_member(self.user_id)
+        old_char = db.get_character_by_id(self.old_char_id)
+        new_char = db.get_character_by_id(self.new_char_id)
+        
+        await send_main_change_log(
+            interaction=interaction,
+            db=db,
+            status="rejected",
+            user=user,
+            moderator=interaction.user,
+            old_char=old_char,
+            new_char=new_char,
+            reason=self.reason.value
+        )
+        
+        if user:
+            try:
+                embed = Embed(
+                    title="❌ Заявка отклонена",
+                    description=(
+                        f"Ваша заявка на смену основного персонажа отклонена.\n\n"
+                        f"**Причина:** {self.reason.value}\n\n"
+                        f"**Отклонил:** {interaction.user.mention}"
+                    ),
+                    color=Color.red()
+                )
+                await user.send(embed=embed)
+            except:
+                pass
+        
+        await interaction.response.send_message("❌ Отклонено!", ephemeral=True, delete_after=5)
+        
+        try:
+            await interaction.channel.delete()
+        except:
+            pass    
