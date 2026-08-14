@@ -1,4 +1,4 @@
-# views/voice_control.py — ПОЛНЫЙ ГОТОВЫЙ ФАЙЛ
+# views/voice_control.py — ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФАЙЛ
 
 import discord
 from discord.ext import commands
@@ -74,22 +74,30 @@ class VoiceControl(commands.Cog):
                     if member.voice and not member.voice.mute:
                         await member.edit(mute=True)
                         muted_count += 1
-                except:
-                    pass
+                        await asyncio.sleep(0.1)
+                except discord.Forbidden:
+                    print(f"❌ Нет прав для мута {member.display_name}")
+                except Exception as e:
+                    print(f"❌ Ошибка мута {member.display_name}: {e}")
         return muted_count
     
     async def unmute_all(self, channel: discord.VoiceChannel):
-        """Размутить всех"""
+        """Размутить всех (с повторной попыткой)"""
         count = 0
         for member in channel.members:
             if member.bot:
                 continue
             try:
-                if member.voice and member.voice.mute:
-                    await member.edit(mute=False)
+                # Принудительно снимаем мут, даже если кажется что он не активен
+                if member.voice:
+                    await member.edit(mute=False, reason="Бой завершён")
                     count += 1
-            except:
-                pass
+                    # Небольшая задержка, чтобы дискорд успел обработать
+                    await asyncio.sleep(0.1)
+            except discord.Forbidden:
+                print(f"❌ Нет прав для размута {member.display_name}")
+            except Exception as e:
+                print(f"❌ Ошибка размута {member.display_name}: {e}")
         return count
     
     @commands.Cog.listener()
@@ -105,6 +113,42 @@ class VoiceControl(commands.Cog):
                     await member.edit(mute=True, reason="Бой идёт")
                 except:
                     pass
+
+    async def create_battle_panel(self, interaction: discord.Interaction, channel: discord.VoiceChannel, custom_members: list = None):
+        """Создать панель управления боем"""
+        raid_leader = None
+        for member in channel.members:
+            if not member.bot:
+                raid_leader = member
+                break
+        
+        if not raid_leader:
+            await interaction.response.send_message("❌ В канале нет участников!", ephemeral=True)
+            return
+        
+        if custom_members:
+            raid_leader = custom_members[0] if custom_members else raid_leader
+        
+        self.active_controls[interaction.guild_id] = {
+            'channel': channel,
+            'unmuted_users': [raid_leader.id],
+            'raid_leader': raid_leader.id,
+            'started_at': discord.utils.utcnow()
+        }
+        
+        embed = Embed(
+            title="🎙️ Управление голосовым каналом",
+            description=f"**Канал:** {channel.mention}\n**Рейд-лидер:** {raid_leader.mention}\n\n"
+                       f"Нажмите **НАЧАТЬ БОЙ**, чтобы замутить всех кроме:\n"
+                       f"• 🎤 Рейд-лидер\n"
+                       f"• 🎤 Глава/Зам/РЛ/Офицеры\n"
+                       f"• 🎤 Настроенные роли/пользователи",
+            color=Color.blue()
+        )
+        
+        view = PullBattleView(self, interaction.guild_id, raid_leader.id, channel)
+        await interaction.response.send_message(embed=embed, view=view)
+
 
 class PullBattleView(View):
     """Кнопка НАЧАТЬ БОЙ"""
@@ -131,13 +175,9 @@ class PullBattleView(View):
             await interaction.response.send_message("❌ Канал не найден!", ephemeral=True)
             return
         
-        # Получаем кого не мутить
         unmuted_ids = self.cog.get_unmuted_ids(channel, self.guild_id, self.raid_leader_id)
-        
-        # Мутим всех
         muted_count = await self.cog.mute_all_except(channel, unmuted_ids)
         
-        # Сохраняем состояние
         self.cog.active_controls[self.guild_id] = {
             'channel': channel,
             'unmuted_users': unmuted_ids,
@@ -145,14 +185,12 @@ class PullBattleView(View):
             'started_at': discord.utils.utcnow()
         }
         
-        # Имена говорящих
         unmuted_names = []
         for uid in unmuted_ids:
             member = interaction.guild.get_member(uid)
             if member:
                 unmuted_names.append(f"🎤 {member.display_name}")
         
-        # Обновляем сообщение
         embed = Embed(
             title="⚔️ БОЙ ИДЁТ!",
             description=f"**Канал:** {channel.name}\n**Замучено:** {muted_count} чел.",
@@ -191,14 +229,13 @@ class PullEndView(View):
             await interaction.response.send_message("❌ Канал не найден!", ephemeral=True)
             return
         
-        # Размучиваем всех
+        # Размучиваем всех (исправленный метод)
         count = await self.cog.unmute_all(channel)
         
         # Удаляем состояние
         if self.guild_id in self.cog.active_controls:
             del self.cog.active_controls[self.guild_id]
         
-        # Обновляем сообщение
         embed = Embed(
             title="✅ БОЙ ЗАВЕРШЁН!",
             description=f"**Размучено:** {count} чел.\n**Канал:** {channel.name}",
@@ -266,7 +303,6 @@ class AlwaysSpeakModal(Modal):
         ))
     
     async def on_submit(self, interaction: discord.Interaction):
-        """Сохранить настройки"""
         db = interaction.client.get_db(interaction.guild_id)
         if not db:
             await interaction.response.send_message("❌ БД не найдена!", ephemeral=True)
@@ -290,7 +326,51 @@ class AlwaysSpeakModal(Modal):
         )
 
 
+class MemberSelect(Select):
+    """Выбор участников для создания панели управления"""
+    def __init__(self, cog, channel: discord.VoiceChannel, members: list):
+        self.cog = cog
+        self.channel = channel
+        
+        options = []
+        for member in members[:25]:
+            if not member.bot:
+                options.append(discord.SelectOption(
+                    label=member.display_name[:100],
+                    value=str(member.id),
+                    description=f"ID: {member.id}"
+                ))
+        
+        super().__init__(
+            placeholder="Выберите участников...",
+            options=options,
+            min_values=1,
+            max_values=4
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        selected_ids = [int(value) for value in self.values]
+        selected_members = []
+        
+        for uid in selected_ids:
+            member = interaction.guild.get_member(uid)
+            if member:
+                selected_members.append(member)
+        
+        if not selected_members:
+            await interaction.response.send_message("❌ Не выбрано ни одного участника!", ephemeral=True)
+            return
+        
+        await self.cog.create_battle_panel(interaction, self.channel, selected_members)
+
+
+class MemberSelectView(View):
+    """View для выбора участников голосового канала"""
+    def __init__(self, cog, channel: discord.VoiceChannel, members: list):
+        super().__init__(timeout=60)
+        self.add_item(MemberSelect(cog, channel, members))
+
+
 async def setup(bot):
-    """Загрузка кога"""
     await bot.add_cog(VoiceControl(bot))
     print("✅ VoiceControl cog загружен")
