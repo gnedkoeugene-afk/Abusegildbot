@@ -1,4 +1,4 @@
-# modals/application_modals.py — ПОЛНЫЙ ФАЙЛ С ЖЁСТКОЙ ВАЛИДАЦИЕЙ
+# modals/application_modals.py — ПОЛНЫЙ ФАЙЛ (БЕЗ ПРОБЕЛОВ В ИМЕНИ)
 
 import discord
 import asyncio
@@ -21,7 +21,7 @@ class ApplicationModal(Modal):
 
         self.add_item(TextInput(
             label="👤 Ваше личное имя",
-            placeholder="Только буквы: Алексей",
+            placeholder="Только буквы без пробелов: Алексей",
             required=True,
             max_length=32,
             min_length=2
@@ -66,84 +66,64 @@ class ApplicationModal(Modal):
             return
 
         # ═══════════════════════════════════════════════════════
-        # ✅ ЖЁСТКАЯ ВАЛИДАЦИЯ ЛИЧНОГО ИМЕНИ
+        # ✅ ЖЁСТКАЯ ВАЛИДАЦИЯ ЛИЧНОГО ИМЕНИ (БЕЗ ПРОБЕЛОВ)
         # ═══════════════════════════════════════════════════════
         
         real_name = self.children[0].value.strip()
         character_name = self.children[1].value.strip()
         invited_by = self.children[4].value.strip()
         
-        # Проверяем КАЖДЫЙ символ в личном имени
-        invalid_chars = []
-        for char in real_name:
-            if not (char.isalpha() or char.isspace()):
-                invalid_chars.append(char)
-        
-        if invalid_chars:
-            unique_invalid = list(dict.fromkeys(invalid_chars))
+        # Только буквы, без пробелов, без цифр, без символов
+        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ]+$', real_name):
+            invalid_chars = list(dict.fromkeys([
+                char for char in real_name 
+                if not char.isalpha()
+            ]))
             await interaction.followup.send(
                 f"❌ **Имя «{real_name}» содержит запрещённые символы!**\n\n"
-                f"Запрещённые символы: `{' '.join(unique_invalid)}`\n\n"
-                f"Можно использовать:\n"
+                f"Запрещено: `{' '.join(invalid_chars) if invalid_chars else ''}`\n\n"
+                f"Можно:\n"
                 f"✅ Только буквы (русские или английские)\n"
-                f"✅ Пробелы\n\n"
+                f"✅ Без пробелов\n\n"
                 f"Нельзя:\n"
-                f"❌ Скобки `()`\n"
+                f"❌ Пробелы\n"
+                f"❌ Скобки\n"
                 f"❌ Цифры\n"
                 f"❌ Спецсимволы\n\n"
-                f"Исправьте и попробуйте снова.",
-                ephemeral=True
-            )
-            return
-        
-        # Дополнительная проверка regex
-        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ\s]+$', real_name):
-            await interaction.followup.send(
-                f"❌ **Имя «{real_name}» не прошло проверку!**\n\n"
-                f"Разрешены только буквы и пробелы.",
-                ephemeral=True
-            )
-            return
-        
-        # Явная проверка на скобки
-        if '(' in real_name or ')' in real_name:
-            await interaction.followup.send(
-                f"❌ **Уберите скобки из имени!**\n\n"
-                f"Вы написали: `{real_name}`\n"
-                f"Просто напишите своё имя без приписок.",
+                f"Примеры:\n"
+                f"✅ `Алексей`\n"
+                f"✅ `John`\n"
+                f"❌ `Анна Мария` (пробел)\n"
+                f"❌ `Женя(123)`\n"
+                f"❌ `John Smith`",
                 ephemeral=True
             )
             return
 
         # ═══════════════════════════════════════════════════════
-        # ✅ ЖЁСТКАЯ ВАЛИДАЦИЯ ИМЕНИ ПЕРСОНАЖА
+        # ✅ ЖЁСТКАЯ ВАЛИДАЦИЯ ИМЕНИ ПЕРСОНАЖА (БЕЗ ПРОБЕЛОВ)
         # ═══════════════════════════════════════════════════════
         
-        invalid_chars_char = []
-        for char in character_name:
-            if not char.isalpha():
-                invalid_chars_char.append(char)
-        
-        if invalid_chars_char:
-            unique_invalid_char = list(dict.fromkeys(invalid_chars_char))
+        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ]+$', character_name):
+            invalid_chars_char = list(dict.fromkeys([
+                char for char in character_name 
+                if not char.isalpha()
+            ]))
             await interaction.followup.send(
                 f"❌ **Имя персонажа «{character_name}» содержит запрещённые символы!**\n\n"
-                f"Запрещённые символы: `{' '.join(unique_invalid_char)}`\n\n"
+                f"Запрещено: `{' '.join(invalid_chars_char) if invalid_chars_char else ''}`\n\n"
                 f"Можно:\n"
-                f"✅ Только буквы (русские или английские)\n\n"
+                f"✅ Только буквы (русские или английские)\n"
+                f"✅ Без пробелов\n\n"
                 f"Нельзя:\n"
-                f"❌ Цифры\n"
                 f"❌ Пробелы\n"
+                f"❌ Цифры\n"
                 f"❌ Спецсимволы\n\n"
-                f"Исправьте и попробуйте снова.",
-                ephemeral=True
-            )
-            return
-        
-        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ]+$', character_name):
-            await interaction.followup.send(
-                f"❌ **Имя персонажа «{character_name}» не прошло проверку!**\n\n"
-                f"Разрешены только буквы, без пробелов и цифр.",
+                f"Примеры:\n"
+                f"✅ `Варвар`\n"
+                f"✅ `Warrior`\n"
+                f"❌ `Варвар 123`\n"
+                f"❌ `War!or`",
                 ephemeral=True
             )
             return
@@ -151,17 +131,6 @@ class ApplicationModal(Modal):
         # ═══════════════════════════════════════════════════════
         # ✅ ВАЛИДАЦИЯ "КТО ПРИГЛАСИЛ"
         # ═══════════════════════════════════════════════════════
-        
-        invited_by_clean = re.sub(r'\([^)]*\)', '', invited_by).strip()
-        invited_by_clean = ' '.join(invited_by_clean.split())
-        
-        if not invited_by_clean:
-            await interaction.followup.send(
-                "❌ **Укажите кто вас пригласил!**\n\n"
-                "Напишите ник пригласившего или «Поиск гильдии».",
-                ephemeral=True
-            )
-            return
         
         if '(' in invited_by or ')' in invited_by:
             await interaction.followup.send(
@@ -172,10 +141,19 @@ class ApplicationModal(Modal):
             )
             return
         
+        invited_by_clean = re.sub(r'\([^)]*\)', '', invited_by).strip()
+        invited_by_clean = ' '.join(invited_by_clean.split())
+        
+        if not invited_by_clean:
+            await interaction.followup.send(
+                "❌ **Укажите кто вас пригласил!**",
+                ephemeral=True
+            )
+            return
+        
         if len(invited_by_clean) > 30:
             await interaction.followup.send(
-                "❌ **Ник пригласившего слишком длинный!**\n"
-                "Максимум 30 символов.",
+                "❌ **Ник пригласившего слишком длинный!**",
                 ephemeral=True
             )
             return
