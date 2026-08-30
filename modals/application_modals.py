@@ -1,5 +1,8 @@
+# modals/application_modals.py — ПОЛНЫЙ ФАЙЛ С ВАЛИДАЦИЕЙ
+
 import discord
 import asyncio
+import re
 from discord.ui import Modal, TextInput
 from discord import TextStyle, Color, Embed
 from datetime import datetime
@@ -16,34 +19,156 @@ class ApplicationModal(Modal):
         self.raid_role = raid_role
         self.specialization = temp_data.get('specialization', 'Не указана')
 
-        self.add_item(TextInput(label="Ваше личное имя", placeholder="Алексей", required=True, max_length=32, min_length=2))
-        self.add_item(TextInput(label="Имя персонажа", placeholder="Варвар", required=True, max_length=50, min_length=2))
-        self.add_item(TextInput(label="Уровень предметов (iLvl)", placeholder="615", required=True, max_length=4, min_length=1))
-        self.add_item(TextInput(label="Ссылка на профиль Sirus", placeholder="https://sirus.su/game/...", required=True, max_length=200, min_length=10))
-        self.add_item(TextInput(label="Кто добавил вас в гильдию", placeholder="Никнейм/Поиск гильдии", required=True, max_length=50))
+        self.add_item(TextInput(
+            label="👤 Ваше личное имя",
+            placeholder="Только буквы: Алексей",
+            required=True,
+            max_length=32,
+            min_length=2
+        ))
+        self.add_item(TextInput(
+            label="🎮 Имя персонажа",
+            placeholder="Только буквы без пробелов: Варвар",
+            required=True,
+            max_length=50,
+            min_length=2
+        ))
+        self.add_item(TextInput(
+            label="💎 Уровень предметов (iLvl)",
+            placeholder="615",
+            required=True,
+            max_length=4,
+            min_length=1
+        ))
+        self.add_item(TextInput(
+            label="🔗 Ссылка на профиль Sirus",
+            placeholder="https://sirus.su/game/...",
+            required=True,
+            max_length=200,
+            min_length=10
+        ))
+        self.add_item(TextInput(
+            label="📨 Кто добавил вас в гильдию",
+            placeholder="Никнейм или «Поиск гильдии»",
+            required=True,
+            max_length=50
+        ))
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
         db = interaction.client.get_db(interaction.guild_id)
         if not db:
-            await interaction.response.send_message("❌ Ошибка БД!", ephemeral=True)
+            await interaction.followup.send("❌ Ошибка БД!", ephemeral=True)
             return
         if db.is_blacklisted(interaction.user.id):
-            await interaction.response.send_message("🚫 Вы в ЧС.", ephemeral=True)
+            await interaction.followup.send("🚫 Вы в ЧС.", ephemeral=True)
             return
 
+        # ═══════════════════════════════════════════════════════
+        # ✅ ВАЛИДАЦИЯ ПОЛЕЙ
+        # ═══════════════════════════════════════════════════════
+        
+        real_name = self.children[0].value.strip()
+        character_name = self.children[1].value.strip()
+        invited_by = self.children[4].value.strip()
+        
+        # ─── ВАЛИДАЦИЯ ЛИЧНОГО ИМЕНИ ───
+        # Только буквы (рус/англ) и пробелы
+        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ\s]+$', real_name):
+            await interaction.followup.send(
+                "❌ **Ошибка в поле «Ваше личное имя»!**\n\n"
+                "Можно:\n"
+                "✅ Буквы (русские или английские)\n"
+                "✅ Пробелы (Анна Мария)\n\n"
+                "Нельзя:\n"
+                "❌ Цифры\n"
+                "❌ Скобки и спецсимволы\n"
+                "❌ Приписки «(лучше)», «(по нику...)»\n\n"
+                "Примеры:\n"
+                "✅ `Алексей`\n"
+                "✅ `Анна Мария`\n"
+                "❌ `Дима(лучше)`\n"
+                "❌ `Никита(по нику ХеллДерр)`",
+                ephemeral=True
+            )
+            return
+        
+        # Проверка на запрещённые слова
+        lower_name = real_name.lower()
+        if any(word in lower_name for word in ['лучше', 'по нику', 'ник:', 'ник -']):
+            await interaction.followup.send(
+                "❌ **Уберите лишние приписки!**\n\n"
+                "В поле «Ваше личное имя» пишите ТОЛЬКО своё имя.\n"
+                "Например: `Никита` или `Дима`",
+                ephemeral=True
+            )
+            return
+        
+        # ─── ВАЛИДАЦИЯ ИМЕНИ ПЕРСОНАЖА ───
+        # Только буквы, без пробелов и цифр
+        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ]+$', character_name):
+            await interaction.followup.send(
+                "❌ **Ошибка в имени персонажа!**\n\n"
+                "Можно:\n"
+                "✅ Только буквы (русские или английские)\n\n"
+                "Нельзя:\n"
+                "❌ Цифры\n"
+                "❌ Пробелы\n"
+                "❌ Спецсимволы\n\n"
+                "Примеры:\n"
+                "✅ `Варвар`\n"
+                "✅ `Warrior`\n"
+                "❌ `Варвар 123`\n"
+                "❌ `War!or`",
+                ephemeral=True
+            )
+            return
+        
+        # ─── ВАЛИДАЦИЯ ПОЛЯ "КТО ПРИГЛАСИЛ" ───
+        # Убираем всё что в скобках
+        invited_by_clean = re.sub(r'\([^)]*\)', '', invited_by).strip()
+        invited_by_clean = ' '.join(invited_by_clean.split())
+        
+        if not invited_by_clean:
+            await interaction.followup.send(
+                "❌ **Укажите кто вас пригласил!**\n\n"
+                "Напишите ник пригласившего или «Поиск гильдии».",
+                ephemeral=True
+            )
+            return
+        
+        if len(invited_by_clean) > 30:
+            await interaction.followup.send(
+                "❌ **Ник пригласившего слишком длинный!**\n"
+                "Максимум 30 символов.",
+                ephemeral=True
+            )
+            return
+        
+        if not re.match(r'^[a-zA-Zа-яА-ЯёЁ0-9\s«»]+$', invited_by_clean):
+            await interaction.followup.send(
+                "❌ **Ник пригласившего указан неверно!**\n\n"
+                "Без скобок и спецсимволов.\n"
+                "Просто напишите ник.",
+                ephemeral=True
+            )
+            return
+        
+        invited_by = invited_by_clean
+
+        # ─── ВАЛИДАЦИЯ ILVL ───
         try:
             ilvl = int(self.children[2].value)
             if not (1 <= ilvl <= 1000):
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ iLvl от 1 до 1000!", ephemeral=True)
+            await interaction.followup.send("❌ iLvl от 1 до 1000!", ephemeral=True)
             return
 
-        invited_by = self.children[4].value.strip()
-
         data = {
-            'real_name': self.children[0].value,
-            'character_name': self.children[1].value,
+            'real_name': real_name,
+            'character_name': character_name,
             'class_spec': self.class_spec,
             'specialization': self.specialization,
             'item_level': ilvl,
@@ -63,8 +188,10 @@ class ApplicationModal(Modal):
         app_id = db.add_application(interaction.user.id, data)
         db.add_log("📝 Заявка", interaction.user.id, details=f"Заявка #{app_id}: {data['character_name']} ({data['class_spec']})")
 
-        overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                      interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)}
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
         for role_id in db.get_reviewer_roles():
             role = guild.get_role(role_id)
             if role:
@@ -85,7 +212,11 @@ class ApplicationModal(Modal):
         class_emoji = get_class_emoji(data['class_spec'])
         role_emoji = {"mdd": "⚔️", "rdd": "🏹", "tank": "🛡️", "heal": "💚"}.get(self.raid_role, "⚔️")
 
-        embed = Embed(title=f"📝 Заявка #{app_id}", description=f"**Заявитель:** {interaction.user.mention}", color=Color.purple())
+        embed = Embed(
+            title=f"📝 Заявка #{app_id}",
+            description=f"**Заявитель:** {interaction.user.mention}",
+            color=Color.purple()
+        )
         embed.add_field(name="👤 Личное имя", value=f"```{data['real_name']}```", inline=True)
         embed.add_field(name="🎮 Имя персонажа", value=f"```{data['character_name']}```", inline=True)
         embed.add_field(name="⚔️ Класс", value=f"{class_emoji} **{data['class_spec']}**", inline=True)
@@ -93,23 +224,22 @@ class ApplicationModal(Modal):
         embed.add_field(name="💎 Уровень предметов", value=f"```{data['item_level']} iLvl```", inline=True)
         embed.add_field(name="📅 Дни рейдов", value=f"```{utils.format_days(data['available_days'])}```", inline=True)
         embed.add_field(name=f"{role_emoji} Роль в рейде", value=f"**{RAID_ROLE_NAMES.get(self.raid_role, 'МДД')}**", inline=True)
-        embed.add_field(name="👤 Кто пригласил", value=f"```{invited_by}```", inline=True)
+        embed.add_field(name="📨 Кто пригласил", value=f"```{invited_by}```", inline=True)
         embed.add_field(name="🔗 Профиль", value=f"[Sirus]({data['profile_url']})", inline=True)
         embed.set_footer(text=f"Гильдия: {db.get_setting('guild_name', 'Abuse')} • ID: {app_id}")
 
         from views.applications import ApplicationReviewView
         view = ApplicationReviewView(channel.id, interaction.user.id, app_id, data)
 
-        # ОТПРАВЛЯЕМ СООБЩЕНИЕ И СОХРАНЯЕМ message_id
         msg = await channel.send(content=" ".join(mentions) if mentions else None, embed=embed, view=view)
         interaction.client.add_view(view, message_id=msg.id)
         db.cursor.execute('UPDATE applications SET message_id = ? WHERE id = ?', (msg.id, app_id))
         db.conn.commit()
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Заявка #{app_id} создана!\n📁 {channel.mention}\n"
             f"👤 {data['real_name']}\n🎮 {data['character_name']} ({data['class_spec']}, {self.specialization})\n"
-            f"💎 {data['item_level']} iLvl\n👤 Пригласил: {invited_by}",
+            f"💎 {data['item_level']} iLvl\n📨 Пригласил: {invited_by}",
             ephemeral=True
         )
 
@@ -121,7 +251,13 @@ class RejectModal(Modal):
         self.user_id = user_id
         self.channel_id = channel_id
         self.data = data or {}
-        self.add_item(TextInput(label="Причина отклонения", placeholder="Укажите причину...", style=TextStyle.paragraph, required=True, max_length=500))
+        self.add_item(TextInput(
+            label="Причина отклонения",
+            placeholder="Укажите причину...",
+            style=TextStyle.paragraph,
+            required=True,
+            max_length=500
+        ))
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -141,9 +277,11 @@ class RejectModal(Modal):
             await utils.remove_roles_from_setting(user, db, 'applicant_role', "Заявка отклонена")
             await utils.remove_roles_from_setting(user, db, 'guest_role', "Заявка отклонена")
             try:
-                embed = Embed(title="❌ Заявка отклонена",
-                              description=f"**Сервер:** {interaction.guild.name}\n**Причина:** {reason}\n\nВы сможете подать заявку снова через некоторое время.",
-                              color=Color.red())
+                embed = Embed(
+                    title="❌ Заявка отклонена",
+                    description=f"**Сервер:** {interaction.guild.name}\n**Причина:** {reason}\n\nВы сможете подать заявку снова через некоторое время.",
+                    color=Color.red()
+                )
                 await user.send(embed=embed)
             except:
                 pass
@@ -165,7 +303,6 @@ class RejectModal(Modal):
                         break
             except:
                 pass
-            # Архив
             try:
                 archive_channel_id = utils.safe_int(db.get_setting('archive_channel', ''))
                 if archive_channel_id:
@@ -174,7 +311,12 @@ class RejectModal(Modal):
                         async for msg in channel.history(limit=5):
                             if msg.author == interaction.client.user and msg.embeds:
                                 e = msg.embeds[0]
-                                ae = Embed(title=f"📁 Архив: {e.title}", description=e.description or "", color=Color.red(), timestamp=datetime.now())
+                                ae = Embed(
+                                    title=f"📁 Архив: {e.title}",
+                                    description=e.description or "",
+                                    color=Color.red(),
+                                    timestamp=datetime.now()
+                                )
                                 for f in e.fields:
                                     ae.add_field(name=f.name, value=f.value, inline=f.inline)
                                 ae.add_field(name="❌ Статус", value=f"Отклонена | {interaction.user.mention}", inline=False)
@@ -199,7 +341,13 @@ class BlacklistModal(Modal):
         self.user_id = user_id
         self.channel_id = channel_id
         self.data = data or {}
-        self.add_item(TextInput(label="Причина добавления в ЧС", placeholder="Укажите причину...", style=TextStyle.paragraph, required=True, max_length=500))
+        self.add_item(TextInput(
+            label="Причина добавления в ЧС",
+            placeholder="Укажите причину...",
+            style=TextStyle.paragraph,
+            required=True,
+            max_length=500
+        ))
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -222,9 +370,11 @@ class BlacklistModal(Modal):
             await utils.remove_roles_from_setting(user, db, 'reject_role', "ЧС")
             await utils.add_roles_from_setting(user, db, 'blacklist_role', "ЧС")
             try:
-                await user.send(embed=Embed(title="🚫 Вы добавлены в ЧС",
-                                            description=f"**Сервер:** {interaction.guild.name}\n**Причина:** {reason}",
-                                            color=Color.dark_red()))
+                await user.send(embed=Embed(
+                    title="🚫 Вы добавлены в ЧС",
+                    description=f"**Сервер:** {interaction.guild.name}\n**Причина:** {reason}",
+                    color=Color.dark_red()
+                ))
             except:
                 pass
 
@@ -245,7 +395,6 @@ class BlacklistModal(Modal):
                         break
             except:
                 pass
-            # Архив
             try:
                 archive_channel_id = utils.safe_int(db.get_setting('archive_channel', ''))
                 if archive_channel_id:
@@ -254,7 +403,12 @@ class BlacklistModal(Modal):
                         async for msg in channel.history(limit=5):
                             if msg.author == interaction.client.user and msg.embeds:
                                 e = msg.embeds[0]
-                                ae = Embed(title=f"📁 Архив: {e.title}", description=e.description or "", color=Color.dark_red(), timestamp=datetime.now())
+                                ae = Embed(
+                                    title=f"📁 Архив: {e.title}",
+                                    description=e.description or "",
+                                    color=Color.dark_red(),
+                                    timestamp=datetime.now()
+                                )
                                 for f in e.fields:
                                     ae.add_field(name=f.name, value=f.value, inline=f.inline)
                                 ae.add_field(name="🚫 Статус", value=f"ЧС | {interaction.user.mention}", inline=False)
