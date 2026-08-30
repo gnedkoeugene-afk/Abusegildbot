@@ -67,7 +67,6 @@ class ApplyView(View):
             await interaction.response.send_message("❌ Вы в чёрном списке!", ephemeral=True, delete_after=20)
             return
         
-        # Проверка через утилиту
         member_role_ids = utils.get_role_ids_from_setting(db, 'member_role')
         for rid in member_role_ids:
             member_role = interaction.guild.get_role(rid)
@@ -244,7 +243,6 @@ class ApplicationReviewView(View):
 
     @classmethod
     def from_dict(cls, data: dict):
-        """Восстанавливает view из сохраненного состояния"""
         return cls(
             channel_id=data['channel_id'],
             user_id=data['user_id'],
@@ -274,7 +272,6 @@ class ApplicationReviewView(View):
                 await interaction.followup.send("❌ Пользователь не найден!", ephemeral=True)
                 return
             
-            # Принимаем заявку
             db.update_application_status(self.app_id, "accepted", interaction.user.id)
             
             char_name = self.app_data.get('character_name', 'Unknown')
@@ -283,8 +280,8 @@ class ApplicationReviewView(View):
             char_ilvl = int(self.app_data.get('item_level', 0))
             char_profile = self.app_data.get('profile_url', '')
             char_role = self.app_data.get('raid_role', 'mdd')
+            user_personal_name = self.app_data.get('real_name', user.display_name)
             
-            # Добавляем персонажа
             char_data = {
                 'character_name': char_name,
                 'class_spec': char_class,
@@ -297,23 +294,19 @@ class ApplicationReviewView(View):
             db.add_character(user.id, char_data)
             db.mark_characters_added(user.id)
             
-            # ✅ ВЫДАЧА РОЛЕЙ ЧЕРЕЗ НАСТРОЙКИ
+            # Выдача ролей
+            print(f"\n🔧 Выдача ролей для {user.display_name} ({user.name}):")
             
-            # 1. Убираем все "плохие" роли
             await utils.remove_roles_from_setting(user, db, 'reject_role', "Заявка принята")
             await utils.remove_roles_from_setting(user, db, 'blacklist_role', "Заявка принята")
             await utils.remove_roles_from_setting(user, db, 'guest_role', "Заявка принята")
             await utils.remove_roles_from_setting(user, db, 'violator_role', "Заявка принята")
-            
-            # 2. Выдаём роль участника
-            print(f"\n🔧 Выдача ролей для {user.display_name} ({user.name}):")
             
             success = await utils.add_roles_from_setting(user, db, 'member_role', "Заявка принята")
             if success:
                 print(f"   ✅ Роль участника выдана успешно")
             else:
                 print(f"   ⚠️ Не удалось выдать роль участника")
-                # Пробуем выдать гостя как запасной вариант
                 guest_success = await utils.add_roles_from_setting(
                     user, db, 'guest_role', 
                     "Заявка принята (member_role не настроена)"
@@ -323,20 +316,14 @@ class ApplicationReviewView(View):
                 else:
                     print(f"   ❌ Не удалось выдать даже гостя!")
             
-            # ✅ Никнейм: ИмяПерсонажа ┆ ЛичноеИмя (из заявки)
+            # Никнейм
             try:
-                # Берем личное имя ИМЕННО ИЗ ЗАЯВКИ (self.app_data)
-                user_personal_name = self.app_data.get('real_name', user.display_name)
                 new_nick = f"{char_name} ┆ {user_personal_name}"
-                
-                # Ограничение Discord: максимум 32 символа
                 if len(new_nick) > 32:
-                    # Вычисляем сколько места осталось для личного имени
-                    max_personal_len = 32 - len(char_name) - 3  # 3 = пробел + ┆ + пробел
+                    max_personal_len = 32 - len(char_name) - 3
                     if max_personal_len > 0:
                         new_nick = f"{char_name} ┆ {user_personal_name[:max_personal_len]}"
                     else:
-                        # Если имя персонажа слишком длинное, обрезаем его
                         new_nick = f"{char_name[:15]} ┆ {user_personal_name[:12]}"
                 
                 await user.edit(nick=new_nick)
@@ -344,7 +331,6 @@ class ApplicationReviewView(View):
             except Exception as e:
                 print(f"   ⚠️ Не удалось изменить никнейм: {e}")
             
-            # Логи
             db.add_log("✅ Заявка принята", interaction.user.id, user.id, f"Персонаж: {char_name}")
             await send_application_log(interaction, db, "accepted", user, interaction.user, char_name)
             
@@ -374,7 +360,7 @@ class ApplicationReviewView(View):
             except:
                 pass
             
-            # ✅ ЛС УВЕДОМЛЕНИЕ ПОЛЬЗОВАТЕЛЮ
+            # ЛС уведомление
             try:
                 embed = Embed(
                     title="✅ Заявка принята!",
@@ -389,13 +375,12 @@ class ApplicationReviewView(View):
             
             await interaction.followup.send(
                 f"✅ Заявка принята!\n"
-                f"👤 **{user_personal_name if 'user_personal_name' in dir() else user.display_name}**\n"
+                f"👤 **{user_personal_name}**\n"
                 f"🎮 **{char_name}** ({char_class}, {char_spec})\n"
                 f"💎 **{char_ilvl}** iLvl",
                 ephemeral=True
             )
             
-            # Обновляем сообщение
             try:
                 if interaction.message:
                     embed = interaction.message.embeds[0]
@@ -405,7 +390,6 @@ class ApplicationReviewView(View):
             except:
                 pass
             
-            # Удаляем канал
             try:
                 await asyncio.sleep(3)
                 await interaction.channel.delete()
