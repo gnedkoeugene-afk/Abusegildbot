@@ -318,13 +318,13 @@ class ApplicationReviewView(View):
             
             # Никнейм
             try:
-                new_nick = f"{char_name} ┆ {user_personal_name}"
+                new_nick = f"{char_name}┆{user_personal_name}"
                 if len(new_nick) > 32:
                     max_personal_len = 32 - len(char_name) - 3
                     if max_personal_len > 0:
-                        new_nick = f"{char_name} ┆ {user_personal_name[:max_personal_len]}"
+                        new_nick = f"{char_name}┆{user_personal_name[:max_personal_len]}"
                     else:
-                        new_nick = f"{char_name[:15]} ┆ {user_personal_name[:12]}"
+                        new_nick = f"{char_name[:15]}┆{user_personal_name[:12]}"
                 
                 await user.edit(nick=new_nick)
                 print(f"   ✅ Никнейм изменен на: {new_nick}")
